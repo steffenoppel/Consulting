@@ -1,0 +1,359 @@
+---
+title: "Nest Desertion Script (Following Woodcock codes example-Stephen Oppel) "
+author: "Mariem Belkadhi"
+date: "2025-10-08"
+output: html_document
+---
+
+
+
+```{r}
+
+
+library(readxl)
+
+obs <- as.data.frame(
+  read_xlsx("Observations2023.xlsx", sheet = 1)
+)
+head(obs)
+
+```
+
+# Whiskered Tern brood desertion / departure model (NIMBLE) 
+# 3 latent states: 1=two parents present, 2=one parent present, 3=zero parents
+# Observations O are 1,2,3 (observed: 2,1,0 parents) with small misclassification
+
+```{r}
+## Libraries
+if(!requireNamespace("nimble", quietly=TRUE)) install.packages("nimble")
+pkgs <- c("lubridate","tidyverse","data.table","MCMCvis","coda","ggplot2")
+for(p in pkgs) if(!requireNamespace(p, quietly=TRUE)) install.packages(p)
+library(lubridate)
+library(tidyverse)
+library(data.table)
+library(MCMCvis)
+library(coda)
+library(nimble)
+
+set.seed(2025)
+```
+
+
+## Input checks
+
+```{r}
+
+if("NEST ID" %in% names(obs)) obs$NestID <- as.character(obs[["NEST ID"]])
+if("NEST_ID" %in% names(obs)) obs$NestID <- as.character(obs[["NEST_ID"]])
+if(!("NestID" %in% names(obs))) stop("Column 'NEST ID' (or 'NEST_ID') not found in 'obs'.")
+if(!("Parents" %in% names(obs))) stop("Column 'Parents' not found in 'obs'.")
+if(!("DATE" %in% names(obs))) stop("Column 'DATE' not found in 'obs'.")
+
+```
+
+## ----- Build encounter matrix y (nind x nweeks) --------------------------
+```{r}
+obs <- obs %>% mutate(DATE = as.Date(DATE))
+
+survey_dates <- sort(unique(obs$DATE))
+nweeks <- length(survey_dates)
+nest_ids <- sort(unique(obs$NestID))
+nind <- length(nest_ids)
+
+wide <- obs %>% 
+  select(NestID, Parents, DATE) %>%
+  distinct(NestID, DATE, .keep_all = TRUE) %>%
+  mutate(DATE = as.Date(DATE)) %>%
+  arrange(NestID, DATE) %>%
+  tidyr::pivot_wider(names_from = DATE, values_from = Parents)
+```
+
+# Map Parents -> model categories:
+# Parents==2 -> 1  ; Parents==1 -> 2 ; Parents==0 -> 3 ; NA -> NA (missing survey)
+
+```{r}
+y_mat <- matrix(NA_integer_, nrow = nind, ncol = nweeks,
+                dimnames = list(nest_ids, as.character(survey_dates)))
+for(i in seq_len(nind)){
+  row <- wide[i, -1]
+  for(j in seq_len(nweeks)){
+    v <- suppressWarnings(as.numeric(row[[j]]))
+    if(is.na(v)) {
+      y_mat[i,j] <- NA_integer_
+    } else if(v >= 2) {
+      y_mat[i,j] <- 1L
+    } else if(v == 1) {
+      y_mat[i,j] <- 2L
+    } else { # v==0 or other <=0
+      y_mat[i,j] <- 3L
+    }
+  }
+}
+```
+
+# First survey index with any observation per nest 
+```{r}
+f <- integer(nind)
+for(i in seq_len(nind)){
+  idx <- which(!is.na(y_mat[i,]))
+  f[i] <- if(length(idx)==0) 1L else min(idx)
+}
+
+isObs <- 1L * (!is.na(y_mat))
+
+effort <- matrix(1, nrow = nind, ncol = nweeks)
+year   <- rep(1L, nind); nyears <- 1L
+tag    <- rep(0L, nind)
+```
+
+##  Build *monotone* initial z (no return allowed in TRUE states)
+# keeping raw y as data (with NAs), but z inits must obey 1→2→3 monotonicity.
+```{r}
+z_init <- matrix(NA_integer_, nrow = nind, ncol = nweeks,
+                 dimnames = dimnames(y_mat))
+mods <- 0L
+for(i in seq_len(nind)){
+  
+  zi <- as.integer(y_mat[i, ])
+
+  obs_pos <- which(!is.na(zi))
+  if(length(obs_pos) == 0){
+    zi[] <- 1L
+  } else {
+    first <- obs_pos[1]
+   
+    if(first > 1) zi[1:(first-1)] <- zi[first]
+    
+    for(t in (first+1):nweeks){
+      if(is.na(zi[t])) zi[t] <- zi[t-1]
+    }
+   
+    zi_fix <- cummax(zi)
+    mods <- mods + sum(zi_fix != zi, na.rm = TRUE)
+    zi <- zi_fix
+  }
+ 
+  zi[zi < 1] <- 1L; zi[zi > 3] <- 3L
+  z_init[i, ] <- zi
+}
+cat("Initial z modifications to enforce monotonicity:", mods, "\n")
+```
+
+## NIMBLE model: NO RETURN in true states
+
+```{r}
+whi.mig.model <- nimbleCode({
+
+  mean.mig ~ dunif(0,1)
+  lm.mean <- log(mean.mig/(1-mean.mig))
+  b.mig.week ~ dnorm(0, 0.25)               
+
+  mean.p.obs ~ dunif(0,1)
+  lpin.mean <- log(mean.p.obs/(1-mean.p.obs))
+
+  eps <- 1e-6                                
+
+  
+  for (i in 1:nind) {
+    for (t in f[i]:nweeks) {
+      logit.mig[i,t] <- lm.mean + b.mig.week * week[t]
+      mig[i,t] <- ilogit(logit.mig[i,t])
+      logit.p.obs[i,t] <- lpin.mean
+      p.obs[i,t] <- ilogit(logit.p.obs[i,t])
+    }
+  }
+
+  # Transitions & observations (no return in TRUE states)
+  for (i in 1:nind) {
+    for (t in f[i]:(nweeks-1)) {
+      # ---- TRUE state transitions (rows=from, cols=to) ----
+      # From 1 (two parents): each parent leaves independently with prob mig
+      ps[1,i,t,1] <- (1 - mig[i,t]) * (1 - mig[i,t])            #  2 present
+      ps[1,i,t,2] <- 2 * mig[i,t] * (1 - mig[i,t])              #  1 present
+      ps[1,i,t,3] <- mig[i,t] * mig[i,t]                        #  0 present
+
+      # From 2 (one parent present): that parent may leave; absent parent cannot return
+      ps[2,i,t,1] <- 0
+      ps[2,i,t,2] <- 1 - mig[i,t]
+      ps[2,i,t,3] <- mig[i,t]
+
+      # From 3 (zero present): absorbing (no return)
+      ps[3,i,t,1] <- 0
+      ps[3,i,t,2] <- 0
+      ps[3,i,t,3] <- 1
+
+      # ---- OBSERVATION model (detection error allowed) ----
+      # True=1 (two present): Binomial(2, p.obs)
+      po[1,i,t,1] <- p.obs[i,t] * p.obs[i,t]                    # observe 2
+      po[1,i,t,2] <- 2 * p.obs[i,t] * (1 - p.obs[i,t])          # observe 1
+      po[1,i,t,3] <- (1 - p.obs[i,t]) * (1 - p.obs[i,t])        # observe 0
+
+      # True=2 (one present): usually observe 1, allow tiny chance to see 2
+      po[2,i,t,1] <- eps
+      po[2,i,t,2] <- p.obs[i,t] - eps
+      po[2,i,t,3] <- 1 - p.obs[i,t]
+
+      # True=3 (zero present): mostly 0; allow tiny misclassification to 1 or 2
+      po[3,i,t,1] <- eps
+      po[3,i,t,2] <- eps
+      po[3,i,t,3] <- 1 - 2*eps
+    }
+  }
+
+  # Masked likelihood for missing surveys:
+  #   if isObs=1 -> use po; if isObs=0 -> uniform over {1,2,3}
+  for (i in 1:nind) {
+    for (t in (f[i]+1):nweeks) {
+      z[i,t] ~ dcat(ps[z[i,t-1], i, t-1, 1:3])                # state process
+      for (k in 1:3) {
+        w[i,t,k] <- isObs[i,t] * po[z[i,t], i, t-1, k] + (1 - isObs[i,t]) * (1/3)
+      }
+      y[i,t] ~ dcat(w[i,t, 1:3])                              # observation process
+    }
+  }
+})
+```
+
+
+## Data & constants for NIMBLE 
+
+## Data & constants for NIMBLE 
+
+```{r}
+whi.constants <- list(f = f,
+                      week = seq_len(nweeks),
+                      nind = nind,
+                      nweeks = nweeks,
+                      nyears = 1L,
+                      year = rep(1L, nind),
+                      effort = effort,
+                      tag = tag)
+
+whi.data <- list(y = y_mat, isObs = isObs)
+
+whi.dims <- list(ps = c(3, nind, nweeks, 3),
+                 po = c(3, nind, nweeks, 3),
+                 w  = c(nind, nweeks, 3))
+```
+
+## Inits & parameters 
+
+```{r}
+parameters <- c("mean.mig", "b.mig.week", "mean.p.obs")
+
+smartInit <- list(
+  z = z_init,
+  mean.mig = 0.1,
+  b.mig.week = 0.1,
+  mean.p.obs = 0.85
+)
+```
+
+## MCMC settings
+
+```{r}
+n.iter   <- 20000
+n.burnin <- 10000
+n.chains <- 3
+thin     <- 2
+
+
+tic <- function() assign(".timer", proc.time(), envir=.GlobalEnv)
+toc <- function() print((proc.time()-get(".timer", envir=.GlobalEnv))["elapsed"])
+tic()
+whi_mcmc <- nimbleMCMC(code = whi.mig.model,
+                       constants = whi.constants,
+                       data = whi.data,
+                       inits = smartInit,
+                       dimensions = whi.dims,
+                       monitors = parameters,
+                       thin = thin,
+                       niter = n.iter,
+                       nburnin = n.burnin,
+                       nchains = n.chains,
+                       summary = TRUE)
+toc()
+
+if(!dir.exists("output")) dir.create("output", showWarnings = FALSE)
+print(whi_mcmc$summary)
+```
+
+## Posterior: weekly desertion probability 
+
+```{r}
+MCMCout  <- do.call(rbind, whi_mcmc$samples)
+parmcols <- colnames(MCMCout)
+nSamps   <- nrow(MCMCout)
+weeks    <- seq_len(nweeks)
+
+meanmig_vec <- as.numeric(MCMCout[, "mean.mig"])
+bmig_vec    <- as.numeric(MCMCout[, "b.mig.week"])
+lm_vec      <- qlogis(meanmig_vec)
+
+Wmat          <- matrix(weeks, nrow = nSamps, ncol = nweeks, byrow = TRUE)
+logit_mig_mat <- matrix(lm_vec, nSamps, nweeks) + matrix(bmig_vec, nSamps, nweeks) * Wmat
+mig_mat       <- plogis(logit_mig_mat)
+
+mig_summary <- data.frame(
+  week = weeks,
+  mig_median = apply(mig_mat, 2, median),
+  mig_lcl    = apply(mig_mat, 2, quantile, 0.025),
+  mig_ucl    = apply(mig_mat, 2, quantile, 0.975),
+  Date       = survey_dates
+)
+
+ ggplot(mig_summary, aes(x = Date)) +
+  geom_ribbon(aes(ymin = mig_lcl, ymax = mig_ucl), alpha = 0.20, fill = "firebrick") +
+  geom_line(aes(y = mig_median), linewidth = 1, color = "firebrick") +
+  scale_y_continuous("Weekly prob. both parents leave", limits = c(0,1)) +
+  scale_x_date("Survey date") +
+  theme_minimal()
+```
+
+## Simulate cumulative proportion deserted (pop = 1000) 
+
+
+```{r}
+
+pop0 <- 1000
+left_mat    <- matrix(0L, nrow = nSamps, ncol = nweeks)
+pop_remain  <- matrix(pop0, nrow = nSamps, ncol = nweeks)
+for(w in 1:nweeks){
+  probs  <- mig_mat[, w]
+  left_w <- rbinom(nSamps, pop_remain[, w], probs)
+  left_mat[, w] <- left_w
+  if(w < nweeks) pop_remain[, w+1] <- pop_remain[, w] - left_w
+}
+prop_mig_mat <- t(apply(left_mat, 1, cumsum)) / pop0
+prop_summary <- data.frame(
+  week    = weeks,
+  prop_med= apply(prop_mig_mat, 2, median),
+  prop_lcl= apply(prop_mig_mat, 2, quantile, 0.025),
+  prop_ucl= apply(prop_mig_mat, 2, quantile, 0.975),
+  Date    = survey_dates
+)
+
+ggplot(prop_summary, aes(x = Date)) +
+  geom_ribbon(aes(ymin = prop_lcl, ymax = prop_ucl), alpha = 0.20, fill = "firebrick") +
+  geom_line(aes(y = prop_med), linewidth = 1, color = "firebrick") +
+  scale_y_continuous("Cumulative proportion nests deserted (sim.)", limits = c(0,1)) +
+  scale_x_date("Survey date") +
+  theme_minimal()
+
+
+
+
+```
+
+# R-hat and ESS
+
+
+```{r}
+
+library(MCMCvis)
+MCMCsummary(whi_mcmc$samples, params = c("mean.mig","b.mig.week","mean.p.obs","mean.ret"))
+MCMCplot(whi_mcmc$samples, params = c("mean.mig","b.mig.week","mean.p.obs","mean.ret"))
+
+```
+
+
