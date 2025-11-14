@@ -13,7 +13,7 @@ output: html_document
 library(readxl)
 
 obs <- as.data.frame(
-  read_xlsx("Observations2023.xlsx", sheet = 1)
+  read_xlsx("data/Observations2023.xlsx", sheet = 1)
 )
 head(obs)
 
@@ -100,10 +100,9 @@ for(i in seq_len(nind)){
 }
 
 isObs <- 1L * (!is.na(y_mat))
-
 effort <- matrix(1, nrow = nind, ncol = nweeks)
-year   <- rep(1L, nind); nyears <- 1L
-tag    <- rep(0L, nind)
+# year   <- rep(1L, nind); nyears <- 1L
+# tag    <- rep(0L, nind)
 ```
 
 ##  Build *monotone* initial z (no return allowed in TRUE states)
@@ -122,15 +121,20 @@ for(i in seq_len(nind)){
   } else {
     first <- obs_pos[1]
    
-    if(first > 1) zi[1:(first-1)] <- zi[first]
+    if(first > 1) zi[1:(first-1)] <- zi[first]  ## you can leave NA before the first observation because the model ignores anything before the first observation
     
     for(t in (first+1):nweeks){
-      if(is.na(zi[t])) zi[t] <- zi[t-1]
+      if(is.na(zi[t])) {
+        y_mat[i,t]<-3 ## intermediate NAs should be set to state 3 (no birds observed) in the observation matrix
+        zi[t] <- zi[t-1]}
+      if(t<nweeks){
+        if(min(zi[(t+1):nweeks], na.rm=T)<zi[t]) {zi[t]<-min(zi[(t+1):nweeks], na.rm=T)}  ## the minimum state (max number of ind) is maintained until the last observation of that state
+      }
     }
    
-    zi_fix <- cummax(zi)
-    mods <- mods + sum(zi_fix != zi, na.rm = TRUE)
-    zi <- zi_fix
+    # zi_fix <- cummax(zi)  ## THIS IS WRONG
+    # mods <- mods + sum(zi_fix != zi, na.rm = TRUE)
+    # zi <- zi_fix
   }
  
   zi[zi < 1] <- 1L; zi[zi > 3] <- 3L
@@ -144,21 +148,19 @@ cat("Initial z modifications to enforce monotonicity:", mods, "\n")
 ```{r}
 whi.mig.model <- nimbleCode({
 
-  mean.mig ~ dunif(0,1)
-  lm.mean <- log(mean.mig/(1-mean.mig))
-  b.mig.week ~ dnorm(0, 0.25)               
-
-  mean.p.obs ~ dunif(0,1)
-  lpin.mean <- log(mean.p.obs/(1-mean.p.obs))
-
-  eps <- 1e-6                                
+  ## Prior parameters (changed to use normal 0 prior on logit scale directly)
+  lm.mean ~ dnorm(0, 1)
+  b.mig.week ~ dnorm(0, 1)               
+  lp.mean ~ dnorm(0, 0.1)
+  b.obs.eff ~ dnorm(1, 1)
+  # eps <- 1e-6            ## this is a fixed near-zero observation probability that does not make much sense?                    
 
   
   for (i in 1:nind) {
     for (t in f[i]:nweeks) {
       logit.mig[i,t] <- lm.mean + b.mig.week * week[t]
       mig[i,t] <- ilogit(logit.mig[i,t])
-      logit.p.obs[i,t] <- lpin.mean
+      logit.p.obs[i,t] <- lp.mean + b.obs.eff * isObs[i,t]
       p.obs[i,t] <- ilogit(logit.p.obs[i,t])
     }
   }
@@ -169,7 +171,7 @@ whi.mig.model <- nimbleCode({
       # ---- TRUE state transitions (rows=from, cols=to) ----
       # From 1 (two parents): each parent leaves independently with prob mig
       ps[1,i,t,1] <- (1 - mig[i,t]) * (1 - mig[i,t])            #  2 present
-      ps[1,i,t,2] <- 2 * mig[i,t] * (1 - mig[i,t])              #  1 present
+      ps[1,i,t,2] <- mig[i,t] * (1 - mig[i,t])              #  1 present ## SO deleted a 2 *
       ps[1,i,t,3] <- mig[i,t] * mig[i,t]                        #  0 present
 
       # From 2 (one parent present): that parent may leave; absent parent cannot return
@@ -185,37 +187,41 @@ whi.mig.model <- nimbleCode({
       # ---- OBSERVATION model (detection error allowed) ----
       # True=1 (two present): Binomial(2, p.obs)
       po[1,i,t,1] <- p.obs[i,t] * p.obs[i,t]                    # observe 2
-      po[1,i,t,2] <- 2 * p.obs[i,t] * (1 - p.obs[i,t])          # observe 1
+      po[1,i,t,2] <- p.obs[i,t] * (1 - p.obs[i,t])          # observe 1  ## SO deleted a 2*
       po[1,i,t,3] <- (1 - p.obs[i,t]) * (1 - p.obs[i,t])        # observe 0
 
       # True=2 (one present): usually observe 1, allow tiny chance to see 2
-      po[2,i,t,1] <- eps
-      po[2,i,t,2] <- p.obs[i,t] - eps
+      po[2,i,t,1] <- 0  ## this should by definition be 0 - you can only know that it is not 0 if birds are individually recognizable? That info is not in this model though!?
+      po[2,i,t,2] <- p.obs[i,t]
       po[2,i,t,3] <- 1 - p.obs[i,t]
 
       # True=3 (zero present): mostly 0; allow tiny misclassification to 1 or 2
-      po[3,i,t,1] <- eps
-      po[3,i,t,2] <- eps
-      po[3,i,t,3] <- 1 - 2*eps
+      po[3,i,t,1] <- 0
+      po[3,i,t,2] <- 0
+      po[3,i,t,3] <- 1  ## if nobody is at the nest then no bird can be observed
     }
   }
 
   # Masked likelihood for missing surveys:
-  #   if isObs=1 -> use po; if isObs=0 -> uniform over {1,2,3}
+  #   if isObs=1 -> use po; if isObs=0 -> uniform over {1,2,3}  ## this should be in the observation process
   for (i in 1:nind) {
+    # Define latent state at first capture
+    z[i,f[i]] <- 1 ## on first record the nest should have had 2 parents - otherwise it is pointless to include it for estimation of nest desertion
     for (t in (f[i]+1):nweeks) {
+      # State process - transition probability from one state to the next (migration)
       z[i,t] ~ dcat(ps[z[i,t-1], i, t-1, 1:3])                # state process
-      for (k in 1:3) {
-        w[i,t,k] <- isObs[i,t] * po[z[i,t], i, t-1, k] + (1 - isObs[i,t]) * (1/3)
-      }
-      y[i,t] ~ dcat(w[i,t, 1:3])                              # observation process
+      # for (k in 1:3) { ## I am not sure what this will actually achieve?
+      #   w[i,t,k] <- isObs[i,t] * po[z[i,t], i, t-1, k] + (1 - isObs[i,t]) * (1/3)
+      #   w[i,t,k] <- po[z[i,t], i, t-1, k]
+      # }
+      # Observation process - probability to observe a number of birds given the true state z[i,t]
+      y[i,t] ~ dcat(po[z[i,t], i, t-1, 1:3])                              # observation process
     }
   }
+  
 })
 ```
 
-
-## Data & constants for NIMBLE 
 
 ## Data & constants for NIMBLE 
 
@@ -223,29 +229,30 @@ whi.mig.model <- nimbleCode({
 whi.constants <- list(f = f,
                       week = seq_len(nweeks),
                       nind = nind,
-                      nweeks = nweeks,
-                      nyears = 1L,
-                      year = rep(1L, nind),
-                      effort = effort,
-                      tag = tag)
+                      #nyears = 1L,  ## not needed in this model
+                      #year = rep(1L, nind),   ## not needed in this model
+                      #effort = effort, ## not yet included - should affect p.obs, but only if effort can vary - so far it does not, replaced by isObs
+                      #tag = tag, ## not needed in this model
+                      isObs = isObs, ## this is effectively a binary matrix of whether a nest was observed or not?
+                      nweeks = nweeks)
 
-whi.data <- list(y = y_mat, isObs = isObs)
+whi.data <- list(y = y_mat)
 
 whi.dims <- list(ps = c(3, nind, nweeks, 3),
-                 po = c(3, nind, nweeks, 3),
-                 w  = c(nind, nweeks, 3))
+                 po = c(3, nind, nweeks, 3))
 ```
 
 ## Inits & parameters 
 
 ```{r}
-parameters <- c("mean.mig", "b.mig.week", "mean.p.obs")
+parameters <- c("lm.mean", "b.mig.week", "lp.mean","b.obs.eff")
 
 smartInit <- list(
   z = z_init,
-  mean.mig = 0.1,
+  lm.mean = 0.1,
   b.mig.week = 0.1,
-  mean.p.obs = 0.85
+  b.obs.eff = 1.5,
+  lp.mean = 0
 )
 ```
 
@@ -256,6 +263,27 @@ n.iter   <- 20000
 n.burnin <- 10000
 n.chains <- 3
 thin     <- 2
+
+
+# PRELIMINARY TEST OF NIMBLE MODEL TO IDENTIFY PROBLEMS --------------------
+test <- nimbleModel(code = whi.mig.model,
+                       constants = whi.constants,
+                       data = whi.data,
+                       inits = smartInit,
+                    calculate=TRUE)
+
+### make sure that none of the logProbs result in NA or -Inf as the model will not converge
+test$calculate()  # will sum all log probs - if there is -Inf or NA then something is not properly initialised
+test$initializeInfo()
+
+# use test output as starting values or check where the NA comes from
+test$logProb_b.mig.week
+test$logProb_b.obs.eff
+test$logProb_y ### there should not be any -Inf in this matrix
+y_mat[2,6:12]
+z_init[2,6:12]
+isObs[2,6:12]
+
 
 
 tic <- function() assign(".timer", proc.time(), envir=.GlobalEnv)
@@ -286,9 +314,8 @@ parmcols <- colnames(MCMCout)
 nSamps   <- nrow(MCMCout)
 weeks    <- seq_len(nweeks)
 
-meanmig_vec <- as.numeric(MCMCout[, "mean.mig"])
+lm_vec <- as.numeric(MCMCout[, "lm.mean"])
 bmig_vec    <- as.numeric(MCMCout[, "b.mig.week"])
-lm_vec      <- qlogis(meanmig_vec)
 
 Wmat          <- matrix(weeks, nrow = nSamps, ncol = nweeks, byrow = TRUE)
 logit_mig_mat <- matrix(lm_vec, nSamps, nweeks) + matrix(bmig_vec, nSamps, nweeks) * Wmat
@@ -305,7 +332,7 @@ mig_summary <- data.frame(
  ggplot(mig_summary, aes(x = Date)) +
   geom_ribbon(aes(ymin = mig_lcl, ymax = mig_ucl), alpha = 0.20, fill = "firebrick") +
   geom_line(aes(y = mig_median), linewidth = 1, color = "firebrick") +
-  scale_y_continuous("Weekly prob. both parents leave", limits = c(0,1)) +
+  scale_y_continuous("Weekly prob. one parent leaves", limits = c(0,1)) +
   scale_x_date("Survey date") +
   theme_minimal()
 ```
@@ -351,8 +378,8 @@ ggplot(prop_summary, aes(x = Date)) +
 ```{r}
 
 library(MCMCvis)
-MCMCsummary(whi_mcmc$samples, params = c("mean.mig","b.mig.week","mean.p.obs","mean.ret"))
-MCMCplot(whi_mcmc$samples, params = c("mean.mig","b.mig.week","mean.p.obs","mean.ret"))
+MCMCsummary(whi_mcmc$samples, params = c("lm.mean", "b.mig.week", "lp.mean","b.obs.eff"))
+MCMCplot(whi_mcmc$samples, params = c("lm.mean", "b.mig.week", "lp.mean","b.obs.eff"))
 
 ```
 
