@@ -23,15 +23,17 @@ model {
   # TM = tag type matrix; dim(n_ind, n_occ)
   # n_tag = number of different tags in dataset (3 = ring or VHF or GPS, 2 = ring or GPS/VHF)
   # sex = vector of sex of individuals (1 = female, 2 = male, NA)
-  # sex.ratio = sex ratio computed form available sexes, to be able to impute NAs in sex; vector of 2
+  # sex.ratio = sex ratio computed from available sexes, to be able to impute NAs in sex; vector of 2
   # first = vector of occasion of first encounter; length n_ind
   # FR = ones = vector with the value 1 repeated n_ind times
   # -------------------------------------------------
   #
   # Priors
-  for(a in 1:2) { # age
-    s_age[a] ~ dunif(0,1)
-  }
+  # for(a in 1:2) { # age
+  #   s_age[a] ~ dunif(0,1)  ## try and use informative beta priors - anything above 0.7 is unrealistic!
+    s_age[1] ~ dbeta(3,12)  ## juvenile survival, always low
+    s_age[2] ~ dbeta(4,5)  ## adult survival, can sometimes be high or low
+  # }
   for(tt in 1:n_tag) { # tag type
     p_tag[tt] ~ dunif(0,1)
     r_tag[tt] ~ dunif(0,1)

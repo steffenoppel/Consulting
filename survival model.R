@@ -199,33 +199,33 @@ parameters <- c("s_age","s_age_sex", # survival per age and/or sex category
   nb <- ni*0.5
   nc <- 4}
 
-
-#  Model selection 
-m1 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v0.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m2 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v0_Sex.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m3 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v1_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m4 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v2_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m5 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v3_Sex_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-
-DIC <- sapply(list(m1,m2,m3,m4,m5), function(x) x$DIC)
-dfDIC <- data.frame(model = paste0("m",1:length(DIC)),
-                    file = sapply(list(m1,m2,m3,m4,m5), function(x) x$modfile),
-                    DIC = DIC,
-                    dDIC = DIC - min(DIC)) %>% arrange(dDIC)
-dfDIC
-
-# final model 
-m3
-plot(m3)
-
-save(m, data_jags, file = "data/jags_CJS_output.RData")
-
-
-# quick plot for parameter estimates
-whiskerplot(m2, "s_age_sex")
-whiskerplot(m3, "s_age")
-whiskerplot(m3, "p_age_tag")
-whiskerplot(m4, "p_tag")
+## cannot run this because did not get model files
+# #  Model selection 
+# m1 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v0.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m2 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v0_Sex.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m3 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v1_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m4 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v2_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m5 <- jags(data_jags, inits = NULL, parameters, "models/model_CJS_v3_Sex_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# 
+# DIC <- sapply(list(m1,m2,m3,m4,m5), function(x) x$DIC)
+# dfDIC <- data.frame(model = paste0("m",1:length(DIC)),
+#                     file = sapply(list(m1,m2,m3,m4,m5), function(x) x$modfile),
+#                     DIC = DIC,
+#                     dDIC = DIC - min(DIC)) %>% arrange(dDIC)
+# dfDIC
+# 
+# # final model 
+# m3
+# plot(m3)
+# 
+# save(m, data_jags, file = "data/jags_CJS_output.RData")
+# 
+# 
+# # quick plot for parameter estimates
+# whiskerplot(m2, "s_age_sex")
+# whiskerplot(m3, "s_age")
+# whiskerplot(m3, "p_age_tag")
+# whiskerplot(m4, "p_tag")
 
 
 
@@ -258,11 +258,11 @@ parameters <- c("s_age","s_age_sex", # survival per age and/or sex category
 
 
 #  Model selection 
-m1 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v0.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m2 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v0_Sex.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m3 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v1_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m1 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v0.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m2 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v0_Sex.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m3 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v1_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
 m4 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v2_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
-m5 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v3_Sex_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
+# m5 <- jags(data_jags, inits = NULL, parameters, "models/model_RR_v3_Sex_AM_TM.R", n.chains = nc, n.iter = ni, n.thin = nt, n.burnin = nb, parallel = T)
 
 DIC <- sapply(list(m1,m2,m3,m4,m5), function(x) x$DIC)
 dfDIC <- data.frame(model = paste0("m",1:length(DIC)),
