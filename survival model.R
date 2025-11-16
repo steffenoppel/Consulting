@@ -21,6 +21,10 @@ hist(as.numeric(time_tags_active$date)); abline(v = c(30,365), col = c(2,4), lwd
 # fix age in ring
 ring$DOB # lots of different values
 ring$DOB <- gsub(" juv", "-05-20", ring$DOB) # if juv, add May 30th as mean hatching data
+
+## that numeric date is an artefact of Excel - I would fix that by setting an origin, rather than subtracting a number of days as.Date(DOB, origin="1899-12-30")
+## see: https://stackoverflow.com/questions/71054152/r-read-excel-reads-dates-as-numbers
+## calculate any ages with 'difftime' so you don't need to worry about how many days what year has
 ring$DOB <- as.Date(ifelse(grepl("-",ring$DOB), as.character(as.Date(ring$DOB)), # if date format, make date
                             ifelse(ring$DOB == "adult", as.character(as.Date(ring$date)-365), # if adult, take the ringing date and subtract a year
                                    as.character(as.Date(as.numeric(ring$DOB))- 365*70 -17)))) # is number date, make date but fix the issue that all dates seem to be 70 years in the future... subtracting an additional 17 days for the 17 leap years in a 70 period
@@ -101,12 +105,12 @@ df <- df %>%
 CH <- df %>% 
   arrange(year) %>% 
   pivot_wider(id_cols = ring, names_from = year, values_from = alive) %>% 
-  filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
+  dplyr::filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
   tibble::column_to_rownames("ring") # the CH can only contain the states for each individual for each year
 View(CH) # 1 = seen alive, 0 = recovered dead, NA = not seen. However, we must code these observations differently for JAGS to understand it
 
 table(as.matrix(CH))
-CH[CH == 0] <- 2 # in JAGS, observation 2 means 'recovered dead'
+CH[CH == 0] <- 2 # in JAGS, observation 2 means 'recovered dead'  - but how can this then be lumped with 'not seen' in L. 183?
 CH[is.na(CH)] <- 3 # in JAGS, observation 3 means 'not seen'
 
 ## create vector of first encounter
@@ -116,7 +120,7 @@ first <- apply(CH, 1, function(x) min(which(x == 1)))
 AM <- df %>% 
   arrange(year) %>% 
   pivot_wider(id_cols = ring, names_from = year, values_from = age) %>% 
-  filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
+  dplyr::filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
   tibble::column_to_rownames("ring") # the CH can only contain the states for each individual for each year
 AM # few individuals were caught as adults: their first record is 2; some individuals are recorded as juvenile 2 years in a row, this needs to be fixed
 
@@ -134,7 +138,7 @@ TM <- df %>%
          tag_type = as.numeric(tag_type)) %>% # levels: 1 = ring, 2 = GPS, 3 = VHF
   arrange(year) %>% 
   pivot_wider(id_cols = ring, names_from = year, values_from = tag_type) %>% 
-  filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
+  dplyr::filter(!is.na(ring)) %>% # that extra year we added earlier also created an NA in ring, which we get rid of here
   tibble::column_to_rownames("ring") # the CH can only contain the states for each individual for each year
 View(TM) # this looks good, though again we have to fill this matrix
 
@@ -176,7 +180,7 @@ rm(list=ls())
 load("data/jags_prep.RData")
 
 # Making 3-states into 2-states
-CH[CH == 3] <- 2 # 1 = seen, 2 = not seen
+CH[CH == 3] <- 2 # 1 = seen, 2 = not seen  ## this seems to lump the 'recovered dead' from L. 113 together with 'not seen', which seems strange??
 table(as.matrix(CH))
 
 # Bundle data
