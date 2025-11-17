@@ -1,9 +1,9 @@
----
-  title: "Nest Desertion Script (Following Woodcock codes example-Stephen Oppel) "
-author: "Mariem Belkadhi"
-date: "2025-10-08"
-output: pdf_document
----
+# ---
+#   title: "Nest Desertion Script (Following Woodcock codes example-Stephen Oppel) "
+# author: "Mariem Belkadhi"
+# date: "2025-10-08"
+# output: pdf_document
+# ---
   
   
   
@@ -144,16 +144,25 @@ cat("Initial z modifications to enforce monotonicity:", mods, "\n")
 whi.mig.model <- nimbleCode({
   
   ## Prior parameters (changed to use normal 0 prior on logit scale directly)
-  lm.mean ~ dnorm(0, 1)
-  b.mig.week ~ dnorm(0, 1)               
+  
+  ## nest departure is state dependent (for 2 or 1 individual separately)
+  for (s in 1:3) {
+    lm.mean[s] ~ dnorm(0, 1)
+    b.mig.week[s] ~ dnorm(0, 1)  
+  }
+             
   lp.mean ~ dnorm(0, 0.1)
   b.obs.eff ~ dnorm(1, 1)
   # eps <- 1e-6            ## this is a fixed near-zero observation probability that does not make much sense?                    
   
   
   for (i in 1:nind) {
-    for (t in f[i]:nweeks) {
-      logit.mig[i,t] <- lm.mean + b.mig.week * week[t]
+    logit.mig[i,f[i]] <- lm.mean[1] + b.mig.week[1] * week[f[i]]  ## on first occasion there are 2 parents present (=state 1)
+    mig[i,f[i]] <- ilogit(logit.mig[i,f[i]])
+    logit.p.obs[i,f[i]] <- lp.mean + b.obs.eff * isObs[i,f[i]]
+    p.obs[i,f[i]] <- ilogit(logit.p.obs[i,f[i]])
+    for (t in (f[i]+1):nweeks) {
+      logit.mig[i,t] <- lm.mean[z[i,t-1]] + b.mig.week[z[i,t-1]] * week[t]  ## state dependent mig probability
       mig[i,t] <- ilogit(logit.mig[i,t])
       logit.p.obs[i,t] <- lp.mean + b.obs.eff * isObs[i,t]
       p.obs[i,t] <- ilogit(logit.p.obs[i,t])
@@ -244,12 +253,12 @@ parameters <- c("lm.mean", "b.mig.week", "lp.mean","b.obs.eff")
 
 smartInit <- list(
   z = z_init,
-  lm.mean = 0.1,
-  b.mig.week = 0.1,
+  lm.mean = c(0.1,0.1,0.1),
+  b.mig.week = c(0.1,0.1,0.1),
   b.obs.eff = 1.5,
   lp.mean = 0
 )
-```
+
 
 ## MCMC settings
 
@@ -308,8 +317,8 @@ parmcols <- colnames(MCMCout)
 nSamps   <- nrow(MCMCout)
 weeks    <- seq_len(nweeks)
 
-lm_vec <- as.numeric(MCMCout[, "lm.mean"])
-bmig_vec    <- as.numeric(MCMCout[, "b.mig.week"])
+lm_vec <- as.numeric(MCMCout[, "lm.mean[1]"])
+bmig_vec    <- as.numeric(MCMCout[, "b.mig.week[1]"])
 
 Wmat          <- matrix(weeks, nrow = nSamps, ncol = nweeks, byrow = TRUE)
 logit_mig_mat <- matrix(lm_vec, nSamps, nweeks) + matrix(bmig_vec, nSamps, nweeks) * Wmat
@@ -326,7 +335,7 @@ mig_summary <- data.frame(
 ggplot(mig_summary, aes(x = Date)) +
   geom_ribbon(aes(ymin = mig_lcl, ymax = mig_ucl), alpha = 0.20, fill = "firebrick") +
   geom_line(aes(y = mig_median), linewidth = 1, color = "firebrick") +
-  scale_y_continuous("Weekly prob. one parent leaves", limits = c(0,1)) +
+  scale_y_continuous("Weekly prob. first parent leaves", limits = c(0,1)) +
   scale_x_date("Survey date") +
   theme_minimal()
 
